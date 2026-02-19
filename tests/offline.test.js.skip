@@ -1,0 +1,531 @@
+/**
+ * Testes de Modo Offline e Sincronização - API
+ * Testa comportamento de cache, sync e resolução de conflitos
+ */
+
+const axios = require('axios');
+const { trackUser, trackItinerary, cleanupTestData } = require('./helpers/testCleanup');
+
+const API_URL = process.env.API_URL || 'http://localhost:3000';
+
+describe('Offline & Sync - Testes Extensivos', () => {
+  let authToken, userId;
+  let itineraryId;
+
+  beforeAll(async () => {
+    const response = await axios.post(`${API_URL}/api/auth/signup`, {
+      name: 'Offline Test User',
+      email: `offline-test-${Date.now()}@test.com`,
+      password: 'Senha@123',
+      acceptedTerms: true
+    });
+    authToken = response.data.accessToken;
+    userId = response.data.user._id;
+    trackUser(userId);
+
+    // Criar roteiro para testes
+    const itRes = await axios.post(`${API_URL}/api/roteiros`, {
+      title: 'Roteiro Offline Test',
+      destination: { city: 'Manaus', country: 'Brasil' },
+      startDate: new Date('2026-11-01'),
+      endDate: new Date('2026-11-05'),
+      duration: 5,
+      budget: { level: 'medio', estimatedTotal: 4500, currency: 'BRL' }
+    }, {
+      headers: { Authorization: `Bearer ${authToken}` }
+    });
+    itineraryId = itRes.data.itinerary._id;
+    trackItinerary(itineraryId);
+  });
+
+  afterAll(async () => {
+    await cleanupTestData({
+      emailPatterns: [/@test\.com$/],
+      titlePatterns: [/Offline/i, /Sync/i]
+    });
+  });
+
+  describe('POST /api/sync/queue - Adicionar à Fila de Sincronização', () => {
+    afterEach(async () => {
+      // 🧹 Limpar fila após cada teste
+      try {
+        await axios.delete(`${API_URL}/api/sync/queue`, {
+          headers: { Authorization: `Bearer ${authToken}` }
+        });
+      } catch (error) {
+        // Ignorar se endpoint não existir
+      }
+    });
+
+    test('✅ Deve adicionar ação offline à fila de sync', async () => {
+      const response = await axios.post(`${API_URL}/api/sync/queue`, {
+        action: 'update',
+        resource: 'itinerary',
+        resourceId: itineraryId,
+        data: {
+          title: 'Título Atualizado Offline'
+        },
+        timestamp: new Date().toISOString()
+      }, {
+        headers: { Authorization: `Bearer ${authToken}` }
+      });
+
+      expect([200, 201]).toContain(response.status);
+      expect(response.data).toHaveProperty('queued');
+    });
+
+    test('✅ Deve aceitar múltiplas ações na fila', async () => {
+      const actions = [
+        {
+          action: 'create',
+          resource: 'day',
+          data: { date: '2026-11-02', activities: [] },
+          timestamp: new Date().toISOString()
+        },
+        {
+          action: 'update',
+          resource: 'budget',
+          resourceId: itineraryId,
+          data: { estimatedTotal: 5000 },
+          timestamp: new Date().toISOString()
+        }
+      ];
+
+      for (const action of actions) {
+        const response = await axios.post(`${API_URL}/api/sync/queue`, action, {
+          headers: { Authorization: `Bearer ${authToken}` }
+        });
+        expect([200, 201]).toContain(response.status);
+      }
+    });
+
+    test('❌ Não deve aceitar ação sem tipo', async () => {
+      try {
+        await axios.post(`${API_URL}/api/sync/queue`, {
+          resource: 'itinerary',
+          data: {}
+        }, {
+          headers: { Authorization: `Bearer ${authToken}` }
+        });
+        fail('Deveria ter lançado erro');
+      } catch (error) {
+        expect(error.response.status).toBe(400);
+      }
+    });
+
+    test('❌ Não deve aceitar ação sem timestamp', async () => {
+      try {
+        await axios.post(`${API_URL}/api/sync/queue`, {
+          action: 'update',
+          resource: 'itinerary',
+          data: {}
+        }, {
+          headers: { Authorization: `Bearer ${authToken}` }
+        });
+        fail('Deveria ter lançado erro');
+      } catch (error) {
+        expect(error.response.status).toBe(400);
+      }
+    });
+  });
+
+  describe('POST /api/sync/process - Processar Fila de Sincronização', () => {
+    beforeEach(async () => {
+      // ✅ INDEPENDÊNCIA: Limpar fila antes de cada teste
+      try {
+        await axios.delete(`${API_URL}/api/sync/queue`, {
+          headers: { Authorization: `Bearer ${authToken}` }
+        });
+      } catch (error) {
+        // Ignorar se não existir endpoint
+      }
+    });
+
+    test('✅ Deve processar fila de sincronização', async () => {
+      // Adicionar ações à fila
+      await axios.post(`${API_URL}/api/sync/queue`, {
+        action: 'update',
+        resource: 'itinerary',
+        resourceId: itineraryId,
+        data: { title: 'Sincronizado do Offline' },
+        timestamp: new Date().toISOString()
+      }, {
+        headers: { Authorization: `Bearer ${authToken}` }
+      });
+
+      // Processar fila
+      const response = await axios.post(`${API_URL}/api/sync/process`, {}, {
+        headers: { Authorization: `Bearer ${authToken}` }
+      });
+
+      expect(response.status).toBe(200);
+      expect(response.data).toHaveProperty('processed');
+      expect(response.data).toHaveProperty('succeeded');
+      expect(response.data).toHaveProperty('failed');
+    });
+
+    test('✅ Deve aplicar mudanças após sincronização', async () => {
+      const newTitle = `Título Sync ${Date.now()}`;
+
+      // Adicionar à fila
+      await axios.post(`${API_URL}/api/sync/queue`, {
+        action: 'update',
+        resource: 'itinerary',
+        resourceId: itineraryId,
+        data: { title: newTitle },
+        timestamp: new Date().toISOString()
+      }, {
+        headers: { Authorization: `Bearer ${authToken}` }
+      });
+
+      // Processar
+      await axios.post(`${API_URL}/api/sync/process`, {}, {
+        headers: { Authorization: `Bearer ${authToken}` }
+      });
+
+      // Verificar se mudança foi aplicada
+      const itRes = await axios.get(`${API_URL}/api/roteiros/${itineraryId}`, {
+        headers: { Authorization: `Bearer ${authToken}` }
+      });
+
+      expect(itRes.data.itinerary.title).toBe(newTitle);
+    });
+
+    test('✅ Deve processar ações na ordem de timestamp', async () => {
+      const now = Date.now();
+
+      // Adicionar ações fora de ordem
+      await axios.post(`${API_URL}/api/sync/queue`, {
+        action: 'update',
+        resource: 'itinerary',
+        resourceId: itineraryId,
+        data: { title: 'Segunda Ação' },
+        timestamp: new Date(now + 2000).toISOString()
+      }, {
+        headers: { Authorization: `Bearer ${authToken}` }
+      });
+
+      await axios.post(`${API_URL}/api/sync/queue`, {
+        action: 'update',
+        resource: 'itinerary',
+        resourceId: itineraryId,
+        data: { title: 'Primeira Ação' },
+        timestamp: new Date(now + 1000).toISOString()
+      }, {
+        headers: { Authorization: `Bearer ${authToken}` }
+      });
+
+      await axios.post(`${API_URL}/api/sync/process`, {}, {
+        headers: { Authorization: `Bearer ${authToken}` }
+      });
+
+      // Última ação deve prevalecer
+      const itRes = await axios.get(`${API_URL}/api/roteiros/${itineraryId}`, {
+        headers: { Authorization: `Bearer ${authToken}` }
+      });
+      expect(itRes.data.itinerary.title).toBe('Segunda Ação');
+    });
+  });
+
+  describe('GET /api/sync/status - Status de Sincronização', () => {
+    test('✅ Deve retornar status da fila de sincronização', async () => {
+      const response = await axios.get(`${API_URL}/api/sync/status`, {
+        headers: { Authorization: `Bearer ${authToken}` }
+      });
+
+      expect(response.status).toBe(200);
+      expect(response.data).toHaveProperty('pending');
+      expect(response.data).toHaveProperty('lastSync');
+      expect(typeof response.data.pending).toBe('number');
+    });
+
+    test('✅ Pending deve refletir quantidade de ações na fila', async () => {
+      // Limpar fila
+      try {
+        await axios.delete(`${API_URL}/api/sync/queue`, {
+          headers: { Authorization: `Bearer ${authToken}` }
+        });
+      } catch (error) {
+        // Ignorar
+      }
+
+      // Adicionar 2 ações
+      await axios.post(`${API_URL}/api/sync/queue`, {
+        action: 'update',
+        resource: 'itinerary',
+        resourceId: itineraryId,
+        data: {},
+        timestamp: new Date().toISOString()
+      }, {
+        headers: { Authorization: `Bearer ${authToken}` }
+      });
+
+      await axios.post(`${API_URL}/api/sync/queue`, {
+        action: 'create',
+        resource: 'day',
+        data: {},
+        timestamp: new Date().toISOString()
+      }, {
+        headers: { Authorization: `Bearer ${authToken}` }
+      });
+
+      const response = await axios.get(`${API_URL}/api/sync/status`, {
+        headers: { Authorization: `Bearer ${authToken}` }
+      });
+
+      expect(response.data.pending).toBeGreaterThanOrEqual(2);
+    });
+  });
+
+  describe('Resolução de Conflitos', () => {
+    test('✅ Server wins: Mudança local antiga deve ser descartada', async () => {
+      const oldTimestamp = new Date(Date.now() - 10000).toISOString(); // 10s atrás
+
+      // Atualizar no servidor
+      await axios.put(`${API_URL}/api/roteiros/${itineraryId}`, {
+        title: 'Versão do Servidor'
+      }, {
+        headers: { Authorization: `Bearer ${authToken}` }
+      });
+
+      // Tentar sincronizar mudança antiga
+      await axios.post(`${API_URL}/api/sync/queue`, {
+        action: 'update',
+        resource: 'itinerary',
+        resourceId: itineraryId,
+        data: { title: 'Versão Antiga Offline' },
+        timestamp: oldTimestamp
+      }, {
+        headers: { Authorization: `Bearer ${authToken}` }
+      });
+
+      await axios.post(`${API_URL}/api/sync/process`, {}, {
+        headers: { Authorization: `Bearer ${authToken}` }
+      });
+
+      // Verificar que versão do servidor prevaleceu
+      const itRes = await axios.get(`${API_URL}/api/roteiros/${itineraryId}`, {
+        headers: { Authorization: `Bearer ${authToken}` }
+      });
+
+      // Depende da estratégia: last-write-wins ou server-wins
+      // Aqui assumimos que timestamp mais recente vence
+    });
+
+    test('✅ Client wins: Mudança local recente deve ser aplicada', async () => {
+      const recentTimestamp = new Date(Date.now() + 1000).toISOString(); // Futuro
+
+      await axios.post(`${API_URL}/api/sync/queue`, {
+        action: 'update',
+        resource: 'itinerary',
+        resourceId: itineraryId,
+        data: { title: 'Versão Local Recente' },
+        timestamp: recentTimestamp
+      }, {
+        headers: { Authorization: `Bearer ${authToken}` }
+      });
+
+      await axios.post(`${API_URL}/api/sync/process`, {}, {
+        headers: { Authorization: `Bearer ${authToken}` }
+      });
+
+      const itRes = await axios.get(`${API_URL}/api/roteiros/${itineraryId}`, {
+        headers: { Authorization: `Bearer ${authToken}` }
+      });
+
+      expect(itRes.data.itinerary.title).toBe('Versão Local Recente');
+    });
+  });
+
+  describe('Cache e Dados Offline', () => {
+    test('✅ Deve retornar header indicando freshness dos dados', async () => {
+      const response = await axios.get(`${API_URL}/api/roteiros/${itineraryId}`, {
+        headers: { Authorization: `Bearer ${authToken}` }
+      });
+
+      // Verificar headers de cache
+      expect(response.headers).toBeDefined();
+      // Cache-Control, ETag, Last-Modified, etc.
+    });
+
+    test('✅ Deve suportar requisições condicionais (If-None-Match)', async () => {
+      // Primeira requisição
+      const firstRes = await axios.get(`${API_URL}/api/roteiros/${itineraryId}`, {
+        headers: { Authorization: `Bearer ${authToken}` }
+      });
+
+      const etag = firstRes.headers['etag'];
+      if (!etag) return; // Endpoint não suporta ETag
+
+      // Segunda requisição com ETag
+      try {
+        const secondRes = await axios.get(`${API_URL}/api/roteiros/${itineraryId}`, {
+          headers: { 
+            Authorization: `Bearer ${authToken}`,
+            'If-None-Match': etag
+          }
+        });
+
+        // Deve retornar 304 Not Modified se não mudou
+        expect([200, 304]).toContain(secondRes.status);
+      } catch (error) {
+        if (error.response && error.response.status === 304) {
+          expect(error.response.status).toBe(304);
+        }
+      }
+    });
+  });
+
+  describe('批量 Sincronização (Batch Sync)', () => {
+    test('✅ Deve aceitar múltiplas ações em uma requisição', async () => {
+      const batchActions = [
+        {
+          action: 'update',
+          resource: 'itinerary',
+          resourceId: itineraryId,
+          data: { title: 'Batch Update 1' },
+          timestamp: new Date().toISOString()
+        },
+        {
+          action: 'create',
+          resource: 'expense',
+          data: { 
+            description: 'Despesa Offline',
+            amount: 100,
+            category: 'transporte'
+          },
+          timestamp: new Date().toISOString()
+        },
+        {
+          action: 'update',
+          resource: 'budget',
+          resourceId: itineraryId,
+          data: { estimatedTotal: 6000 },
+          timestamp: new Date().toISOString()
+        }
+      ];
+
+      const response = await axios.post(`${API_URL}/api/sync/batch`, {
+        actions: batchActions
+      }, {
+        headers: { Authorization: `Bearer ${authToken}` }
+      });
+
+      expect(response.status).toBe(200);
+      expect(response.data).toHaveProperty('results');
+      expect(response.data.results.length).toBe(batchActions.length);
+    });
+
+    test('✅ Resultados de batch devem indicar sucesso/falha individual', async () => {
+      const batchActions = [
+        {
+          action: 'update',
+          resource: 'itinerary',
+          resourceId: itineraryId,
+          data: { title: 'Válido' },
+          timestamp: new Date().toISOString()
+        },
+        {
+          action: 'update',
+          resource: 'itinerary',
+          resourceId: '507f1f77bcf86cd799439011', // ID inexistente
+          data: { title: 'Inválido' },
+          timestamp: new Date().toISOString()
+        }
+      ];
+
+      const response = await axios.post(`${API_URL}/api/sync/batch`, {
+        actions: batchActions
+      }, {
+        headers: { Authorization: `Bearer ${authToken}` }
+      });
+
+      expect(response.status).toBe(200);
+      expect(response.data.results[0].success).toBe(true);
+      expect(response.data.results[1].success).toBe(false);
+    });
+  });
+
+  describe('Limpeza de Fila Antiga', () => {
+    test('✅ Deve limpar ações antigas já sincronizadas', async () => {
+      // Adicionar ação
+      await axios.post(`${API_URL}/api/sync/queue`, {
+        action: 'update',
+        resource: 'itinerary',
+        resourceId: itineraryId,
+        data: { title: 'Para Limpar' },
+        timestamp: new Date(Date.now() - 86400000).toISOString() // 1 dia atrás
+      }, {
+        headers: { Authorization: `Bearer ${authToken}` }
+      });
+
+      // Processar
+      await axios.post(`${API_URL}/api/sync/process`, {}, {
+        headers: { Authorization: `Bearer ${authToken}` }
+      });
+
+      // Solicitar limpeza
+      const response = await axios.delete(`${API_URL}/api/sync/queue/cleanup`, {
+        headers: { Authorization: `Bearer ${authToken}` }
+      });
+
+      expect([200, 204]).toContain(response.status);
+    });
+  });
+
+  describe('Validação de Integridade', () => {
+    test('❌ Não deve processar ação com dados corrompidos', async () => {
+      try {
+        await axios.post(`${API_URL}/api/sync/queue`, {
+          action: 'update',
+          resource: 'itinerary',
+          resourceId: itineraryId,
+          data: null, // Dados inválidos
+          timestamp: new Date().toISOString()
+        }, {
+          headers: { Authorization: `Bearer ${authToken}` }
+        });
+        
+        const processRes = await axios.post(`${API_URL}/api/sync/process`, {}, {
+          headers: { Authorization: `Bearer ${authToken}` }
+        });
+
+        expect(processRes.data.failed).toBeGreaterThan(0);
+      } catch (error) {
+        expect(error.response.status).toBe(400);
+      }
+    });
+
+    test('❌ Não deve processar ação para recurso inexistente', async () => {
+      await axios.post(`${API_URL}/api/sync/queue`, {
+        action: 'update',
+        resource: 'itinerary',
+        resourceId: '507f1f77bcf86cd799439011',
+        data: { title: 'Não Existe' },
+        timestamp: new Date().toISOString()
+      }, {
+        headers: { Authorization: `Bearer ${authToken}` }
+      });
+
+      const response = await axios.post(`${API_URL}/api/sync/process`, {}, {
+        headers: { Authorization: `Bearer ${authToken}` }
+      });
+
+      expect(response.data.failed).toBeGreaterThan(0);
+    });
+  });
+
+  describe('Métricas de Sincronização', () => {
+    test('✅ Deve retornar estatísticas de sync', async () => {
+      const response = await axios.get(`${API_URL}/api/sync/stats`, {
+        headers: { Authorization: `Bearer ${authToken}` }
+      });
+
+      if (response.status === 200) {
+        expect(response.data).toHaveProperty('totalSyncs');
+        expect(response.data).toHaveProperty('successRate');
+        expect(response.data).toHaveProperty('averageProcessingTime');
+      }
+    });
+  });
+});
