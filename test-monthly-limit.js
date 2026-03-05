@@ -1,9 +1,9 @@
 // Script para testar o limite mensal de criações
 require('dotenv').config();
 const mongoose = require('mongoose');
-const Subscription = require('./src/models/Subscription');
-const Itinerary = require('./src/models/Itinerary');
-const User = require('./src/models/User');
+const Subscription = require('../backend/src/models/Subscription');
+const Itinerary = require('../backend/src/models/Itinerary');
+const User = require('../backend/src/models/User');
 
 async function testMonthlyLimit() {
   try {
