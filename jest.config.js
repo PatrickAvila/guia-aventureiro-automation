@@ -37,10 +37,6 @@ module.exports = {
     }]
   ],
   
-  // ⏱️ Retry para testes instáveis
-  testRetryAttempts: process.env.RETRY === 'true' ? 2 : 0,
-  testRetryIgnoreErrors: [/socket hang up/i, /ECONNREFUSED/i, /timeout/i],
-  
   // 🎯 Verbose output
   verbose: process.env.VERBOSE === 'true' || false,
 };

@@ -9,7 +9,7 @@ const FormData = require('form-data');
 const fs = require('fs');
 const path = require('path');
 
-const API_URL = process.env.API_URL || 'http://localhost:5000';
+const API_URL = process.env.API_URL || 'http://localhost:3000';
 
 describe('Upload de Fotos - API', () => {
   let accessToken;
@@ -31,7 +31,7 @@ describe('Upload de Fotos - API', () => {
   });
 
   describe('POST /api/upload - Upload de Foto', () => {
-    test('deve fazer upload de imagem válida', async () => {
+    test('deve bloquear upload para usuário free', async () => {
       // Criar uma imagem fake de teste (1x1 pixel PNG)
       const fakeImageBuffer = Buffer.from(
         'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
@@ -52,13 +52,12 @@ describe('Upload de Fotos - API', () => {
             ...formData.getHeaders(),
             Authorization: `Bearer ${accessToken}`,
           },
+          validateStatus: () => true,
         }
       );
 
-      expect(response.status).toBe(200);
-      expect(response.data).toHaveProperty('url');
-      expect(response.data).toHaveProperty('publicId');
-      expect(response.data.url).toContain('cloudinary.com');
+      expect(response.status).toBe(403);
+      expect(response.data).toHaveProperty('error', 'feature_locked');
     });
 
     test('deve rejeitar upload sem autenticação', async () => {
@@ -102,7 +101,7 @@ describe('Upload de Fotos - API', () => {
   });
 
   describe('POST /api/upload/multiple - Upload Múltiplo', () => {
-    test('deve fazer upload de múltiplas fotos', async () => {
+    test('deve bloquear upload múltiplo para usuário free', async () => {
       const fakeImageBuffer = Buffer.from(
         'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
         'base64'
@@ -121,15 +120,12 @@ describe('Upload de Fotos - API', () => {
             ...formData.getHeaders(),
             Authorization: `Bearer ${accessToken}`,
           },
+          validateStatus: () => true,
         }
       );
 
-      expect(response.status).toBe(200);
-      expect(response.data).toHaveProperty('photos');
-      expect(Array.isArray(response.data.photos)).toBe(true);
-      expect(response.data.photos.length).toBe(3);
-      expect(response.data.photos[0]).toHaveProperty('url');
-      expect(response.data.photos[0]).toHaveProperty('publicId');
+      expect(response.status).toBe(403);
+      expect(response.data).toHaveProperty('error', 'feature_locked');
     });
 
     test('deve rejeitar mais de 10 fotos', async () => {

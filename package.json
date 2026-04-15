@@ -18,14 +18,15 @@
     "setup": "node scripts/setup-android-emulator.js"
   },
   "dependencies": {
-    "axios": "^1.13.5",
+    "axios": "^1.15.0",
     "dotenv": "^16.3.1",
+    "follow-redirects": "1.16.0",
     "mongoose": "^8.3.2"
   },
   "devDependencies": {
     "form-data": "^4.0.5",
     "jest": "^29.7.0",
-    "jest-junit": "^16.0.0",
-    "jest-html-reporters": "^3.10.0"
+    "jest-html-reporters": "^3.1.7",
+    "jest-junit": "^16.0.0"
   }
 }

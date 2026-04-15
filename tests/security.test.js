@@ -6,7 +6,7 @@
 const axios = require('axios');
 
 // Usar variável de ambiente ou padrão para produção
-const PROD_API_URL = process.env.PROD_API_URL || 'https://guia-aventureiro-backend.onrender.com';
+const PROD_API_URL = process.env.PROD_API_URL || 'https://guia-aventureiro-api-new.onrender.com';
 const API_URL = process.env.API_URL || 'http://localhost:3000';
 
 describe('Segurança - Produção', () => {
